@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from todoist_cli.auth import load_dotenv_token
+from todoist_cli.auth import DEFAULT_ENV_FILES, load_dotenv_token
 from todoist_cli.cli import main
 
 
@@ -36,3 +36,7 @@ def test_missing_token_error_does_not_assume_machine_specific_path(monkeypatch, 
     err = capsys.readouterr().err
     assert "TODOIST_CLI_ENV_FILE" in err
     assert "/tmp/nonexistent-todoist-cli-env" in err
+
+
+def test_default_env_file_is_neutral_config_path():
+    assert (Path.home() / ".config" / "todoist-cli" / "env",) == DEFAULT_ENV_FILES

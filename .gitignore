@@ -15,6 +15,11 @@ build/
 !.env.example
 *.log
 *.jsonl
+*.sqlite
+*.sqlite3
+*.db
 .todoist-cli/
 todoist-export*.json
 todoist-sync*.json
+sync-state.json
+oauth-tokens.json

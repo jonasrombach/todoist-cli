@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 TOKEN_ENV_VARS = ("TODOIST_API_TOKEN", "TODOIST_TOKEN")
-DEFAULT_ENV_FILES = (Path.home() / ".hermes" / ".env",)
+DEFAULT_ENV_FILES = (Path.home() / ".config" / "todoist-cli" / "env",)
 
 
 def load_dotenv_token(env_file: Path) -> str | None:
