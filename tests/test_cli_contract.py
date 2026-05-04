@@ -26,12 +26,11 @@ def test_every_sdk_method_has_a_cli_spec():
 def test_parser_exposes_human_friendly_task_aliases():
     parser = build_parser()
 
-    args = parser.parse_args(["tasks", "add", "Buy milk", "--due-string", "tomorrow", "--yes"])
+    args = parser.parse_args(["tasks", "add", "Buy milk", "--due-string", "tomorrow"])
 
     assert args.sdk_method == "add_task"
     assert args.content == "Buy milk"
     assert args.due_string == "tomorrow"
-    assert args.yes is True
 
 
 def test_main_outputs_json_for_mocked_client(capsys):

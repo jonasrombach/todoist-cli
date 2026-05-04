@@ -11,11 +11,10 @@ from typing import Any
 from .context import build_heartbeat_context, fetch_sync_payload
 from .sdk import METHOD_SPECS, MethodSpec, iter_specs
 
-BOOL_OPTIONS = {"is_favorite", "auto_reminder", "omit_personal", "collapsed"}
-INT_OPTIONS = {"item_order", "priority", "duration", "minute_offset", "order", "radius", "limit"}
+BOOL_OPTIONS = {"is_favorite", "auto_reminder", "auto_parse_labels", "omit_personal", "collapsed"}
+INT_OPTIONS = {"item_order", "priority", "duration", "minute_offset", "order", "day_order", "radius", "limit"}
 FLOAT_OPTIONS = {"loc_lat", "loc_long"}
 JSON_OPTIONS = {"labels", "ids", "attachment", "uids_to_notify"}
-MUTATION_ENV = "TODOIST_CLI_ASSUME_YES"
 
 
 def load_token() -> str | None:
@@ -105,8 +104,6 @@ def add_spec_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPars
     for opt in spec.options:
         add_option(parser, opt)
     parser.add_argument("--max-pages", type=int, default=None, help="Maximum SDK pages to consume for paginated calls.")
-    if spec.mutating:
-        parser.add_argument("--yes", action="store_true", help="Confirm this mutating Todoist operation.")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -130,7 +127,6 @@ def build_parser() -> argparse.ArgumentParser:
     raw_call.add_argument("method", choices=sorted(METHOD_SPECS))
     raw_call.add_argument("args", nargs="*", help="Positional arguments")
     raw_call.add_argument("--kwargs", default="{}", help="JSON object of keyword arguments")
-    raw_call.add_argument("--yes", action="store_true")
     raw_call.add_argument("--max-pages", type=int)
     raw_call.set_defaults(raw_call=True)
     for name in sorted(METHOD_SPECS):
@@ -142,8 +138,6 @@ def build_parser() -> argparse.ArgumentParser:
         for opt in spec.options:
             add_option(p, opt)
         p.add_argument("--max-pages", type=int)
-        if spec.mutating:
-            p.add_argument("--yes", action="store_true")
 
     ctx = sub.add_parser("heartbeat-context", help="Read Todoist and emit compact heartbeat task context.")
     ctx.set_defaults(heartbeat_context=True)
@@ -158,10 +152,6 @@ def namespace_to_kwargs(args: argparse.Namespace, spec: MethodSpec) -> tuple[lis
         if raw is not None:
             kwargs[name] = coerce_option(name, raw)
     return positional, kwargs
-
-
-def is_confirmed(args: argparse.Namespace) -> bool:
-    return bool(getattr(args, "yes", False)) or os.environ.get(MUTATION_ENV) in {"1", "true", "yes"}
 
 
 def print_result(value: Any, fmt: str) -> None:
@@ -191,19 +181,12 @@ def main(argv: list[str] | None = None, client_factory: Callable[[], Any] | None
             return 0
         if getattr(args, "raw_call", False):
             method = args.method
-            spec = METHOD_SPECS[method]
-            if spec.mutating and not is_confirmed(args):
-                print(f"{method} requires --yes", file=sys.stderr)
-                return 2
             client = (client_factory or default_client_factory)()
             kwargs = json.loads(args.kwargs)
             print_result(invoke(client, method, list(args.args), kwargs, args.max_pages), fmt)
             return 0
         method = args.sdk_method
         spec = METHOD_SPECS[method]
-        if spec.mutating and not is_confirmed(args):
-            print(f"{method} requires --yes", file=sys.stderr)
-            return 2
         positional, kwargs = namespace_to_kwargs(args, spec)
         client = (client_factory or default_client_factory)()
         print_result(invoke(client, method, positional, kwargs, args.max_pages), fmt)

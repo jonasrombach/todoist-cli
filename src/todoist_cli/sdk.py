@@ -22,7 +22,7 @@ METHOD_SPECS: dict[str, MethodSpec] = {
     "add_project": MethodSpec("add_project", "projects", "add", ("name",), ("description", "parent_id", "color", "is_favorite", "view_style"), True),
     "add_reminder": MethodSpec("add_reminder", "reminders", "add", ("task_id",), ("reminder_type", "minute_offset", "due_string", "due_date", "due_datetime", "due_lang", "due_timezone", "service"), True),
     "add_section": MethodSpec("add_section", "sections", "add", ("name", "project_id"), ("order",), True),
-    "add_task": MethodSpec("add_task", "tasks", "add", ("content",), ("description", "project_id", "section_id", "parent_id", "labels", "priority", "due_string", "due_lang", "due_date", "due_datetime", "assignee_id", "duration", "duration_unit", "deadline_date", "deadline_lang"), True),
+    "add_task": MethodSpec("add_task", "tasks", "add", ("content",), ("description", "project_id", "section_id", "parent_id", "labels", "priority", "due_string", "due_lang", "due_date", "due_datetime", "assignee_id", "order", "auto_reminder", "auto_parse_labels", "duration", "duration_unit", "deadline_date", "deadline_lang"), True),
     "add_task_quick": MethodSpec("add_task_quick", "tasks", "quick-add", ("text",), ("note", "reminder", "auto_reminder"), True),
     "archive_project": MethodSpec("archive_project", "projects", "archive", ("project_id",), mutating=True),
     "complete_task": MethodSpec("complete_task", "tasks", "complete", ("task_id",), mutating=True),
@@ -66,7 +66,7 @@ METHOD_SPECS: dict[str, MethodSpec] = {
     "update_project": MethodSpec("update_project", "projects", "update", ("project_id",), ("name", "description", "color", "is_favorite", "view_style", "order", "collapsed"), True),
     "update_reminder": MethodSpec("update_reminder", "reminders", "update", ("reminder_id",), ("minute_offset", "due_string", "due_date", "due_datetime", "due_lang", "due_timezone", "service"), True),
     "update_section": MethodSpec("update_section", "sections", "update", ("section_id",), ("name", "order", "collapsed"), True),
-    "update_task": MethodSpec("update_task", "tasks", "update", ("task_id",), ("content", "description", "labels", "priority", "due_string", "due_lang", "due_date", "due_datetime", "assignee_id", "duration", "duration_unit", "deadline_date", "deadline_lang"), True),
+    "update_task": MethodSpec("update_task", "tasks", "update", ("task_id",), ("content", "description", "labels", "priority", "due_string", "due_lang", "due_date", "due_datetime", "assignee_id", "order", "day_order", "collapsed", "duration", "duration_unit", "deadline_date", "deadline_lang"), True),
 }
 
 
