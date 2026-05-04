@@ -128,13 +128,29 @@ def build_heartbeat_context(payload: dict[str, Any], now_iso: str | None = None)
         for item in values or []:
             if not isinstance(item, dict):
                 continue
+            task_id = str(item.get("task_id") or item.get("id"))
+            if bucket_name == "completed":
+                evidence = {
+                    "kind": "todoist_completed_item",
+                    "task_id": task_id,
+                    "checked": bool(item.get("checked")),
+                    "completed_at": item.get("completed_at"),
+                    "completed_by_uid": item.get("completed_by_uid"),
+                }
+            else:
+                evidence = {
+                    "kind": "todoist_deleted_item",
+                    "task_id": task_id,
+                    "is_deleted": bool(item.get("is_deleted")),
+                }
             buckets[bucket_name].append(
                 {
-                    "id": str(item.get("task_id") or item.get("id")),
+                    "id": task_id,
                     "content": item.get("content"),
                     "project": projects.get(str(item.get("project_id")), str(item.get("project_id") or "")),
                     "completed_at": item.get("completed_at"),
                     "due": item.get("due"),
+                    "evidence": evidence,
                 }
             )
     order = {
