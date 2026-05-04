@@ -4,15 +4,22 @@ import argparse
 import json
 import sys
 from collections.abc import Callable, Iterable
+from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from .auth import load_token, missing_token_message
-from .context import build_heartbeat_context, fetch_sync_payload
+from .context import RESOURCE_TYPES, build_heartbeat_context, fetch_sync_payload
+from .oauth import build_authorization_url, redact_secret
 from .sdk import METHOD_SPECS, MethodSpec, iter_specs
+from .sync_store import SyncStore, apply_completed_backfill, apply_sync_payload
+from .webhooks import TodoistWebhookStore, verify_todoist_signature
 
 BOOL_OPTIONS = {"is_favorite", "auto_reminder", "auto_parse_labels", "omit_personal", "collapsed"}
 INT_OPTIONS = {"item_order", "priority", "duration", "minute_offset", "order", "day_order", "radius", "limit"}
 FLOAT_OPTIONS = {"loc_lat", "loc_long"}
+DATE_OPTIONS = {"due_date", "deadline_date", "since", "until"}
+DATETIME_OPTIONS = {"due_datetime"}
 JSON_OPTIONS = {"labels", "ids", "attachment", "uids_to_notify"}
 
 
@@ -28,6 +35,8 @@ def default_client_factory() -> Any:
 def serialize(value: Any) -> Any:
     if value is None or isinstance(value, str | int | float | bool):
         return value
+    if isinstance(value, date | datetime):
+        return value.isoformat()
     if isinstance(value, list | tuple):
         return [serialize(v) for v in value]
     if isinstance(value, dict):
@@ -60,14 +69,23 @@ def flatten_paginated(value: Any, max_pages: int | None = None) -> list[Any]:
 def coerce_option(name: str, value: str | None) -> Any:
     if value is None:
         return None
-    if name in BOOL_OPTIONS:
-        return str(value).lower() in {"1", "true", "yes", "y", "on"}
-    if name in INT_OPTIONS:
-        return int(value)
-    if name in FLOAT_OPTIONS:
-        return float(value)
-    if name in JSON_OPTIONS:
-        return json.loads(value)
+    try:
+        if name in BOOL_OPTIONS:
+            return str(value).lower() in {"1", "true", "yes", "y", "on"}
+        if name in INT_OPTIONS:
+            return int(value)
+        if name in FLOAT_OPTIONS:
+            return float(value)
+        if name in DATE_OPTIONS:
+            return date.fromisoformat(value)
+        if name in DATETIME_OPTIONS:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if name in JSON_OPTIONS:
+            return json.loads(value)
+    except ValueError as exc:
+        raise ValueError(f"Invalid value for {name}: {value!r}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON for {name}: {value!r}") from exc
     return value
 
 
@@ -123,7 +141,49 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--max-pages", type=int)
 
     ctx = sub.add_parser("heartbeat-context", help="Read Todoist and emit compact heartbeat task context.")
+    ctx.add_argument("--state-dir")
+    ctx.add_argument("--resources", default=",".join(RESOURCE_TYPES))
+    ctx.add_argument("--now")
+    ctx.add_argument("--no-sync", action="store_true", help="Build from existing local store without pulling first.")
     ctx.set_defaults(heartbeat_context=True)
+
+    sync = sub.add_parser("sync", help="Maintain local Todoist sync state.")
+    sync_sub = sync.add_subparsers(dest="sync_action", required=True)
+    sync_pull = sync_sub.add_parser("pull", help="Pull Todoist /sync changes into the local store.")
+    sync_pull.add_argument("--state-dir")
+    sync_pull.add_argument("--resources", default=",".join(RESOURCE_TYPES))
+    sync_pull.add_argument("--full", action="store_true", help="Force a full sync with sync_token='*'.")
+    sync_pull.set_defaults(sync_pull=True)
+    sync_status = sync_sub.add_parser("status", help="Inspect local sync store status.")
+    sync_status.add_argument("--state-dir")
+    sync_status.set_defaults(sync_status=True)
+    sync_reset = sync_sub.add_parser("reset", help="Remove local sync state.")
+    sync_reset.add_argument("--state-dir")
+    sync_reset.set_defaults(sync_reset=True)
+    sync_backfill = sync_sub.add_parser("backfill-completed", help="Backfill recent completed tasks into the sync store.")
+    sync_backfill.add_argument("--state-dir")
+    sync_backfill.add_argument("--window-days", type=int, default=14)
+    sync_backfill.add_argument("--now")
+    sync_backfill.add_argument("--limit", type=int, default=200)
+    sync_backfill.set_defaults(sync_backfill_completed=True)
+
+    webhook = sub.add_parser("webhook", help="Handle Todoist webhook wake-up events.")
+    webhook_sub = webhook.add_subparsers(dest="webhook_action", required=True)
+    webhook_receive = webhook_sub.add_parser("receive", help="Verify and record one Todoist webhook payload, then pull sync.")
+    webhook_receive.add_argument("--state-dir")
+    webhook_receive.add_argument("--secret", required=True)
+    webhook_receive.add_argument("--signature", required=True)
+    webhook_receive.add_argument("--body-file", required=True)
+    webhook_receive.set_defaults(webhook_receive=True)
+
+    oauth = sub.add_parser("oauth", help="Todoist OAuth helper commands.")
+    oauth_sub = oauth.add_subparsers(dest="oauth_action", required=True)
+    oauth_url = oauth_sub.add_parser("authorize-url", help="Build a Todoist OAuth authorization URL.")
+    oauth_url.add_argument("--client-id", required=True)
+    oauth_url.add_argument("--redirect-uri", required=True)
+    oauth_url.add_argument("--scope", required=True)
+    oauth_url.add_argument("--state", required=True)
+    oauth_url.set_defaults(oauth_authorize_url=True)
     return parser
 
 
@@ -145,6 +205,55 @@ def print_result(value: Any, fmt: str) -> None:
         print(json.dumps(data, ensure_ascii=False, separators=(",", ":")))
 
 
+def print_error(exc: Exception, fmt: str) -> None:
+    error = {
+        "status": "error",
+        "error_type": type(exc).__name__,
+        "message": str(exc),
+    }
+    print(str(exc), file=sys.stderr)
+    if fmt == "pretty":
+        print(json.dumps(error, ensure_ascii=False, indent=2, sort_keys=True))
+    else:
+        print(json.dumps(error, ensure_ascii=False, separators=(",", ":")))
+
+
+def sync_state_to_payload(state: dict[str, Any]) -> dict[str, Any]:
+    resources = state.get("resources", {})
+    return {key: list(resources.get(key, {}).values()) for key in RESOURCE_TYPES}
+
+
+def sync_status_payload(store: SyncStore) -> dict[str, Any]:
+    state = store.load_state()
+    resources = state.get("resources", {})
+    return {
+        "configured": True,
+        "state_file": str(store.state_file),
+        "sync_token_present": bool(state.get("sync_token")),
+        "last_sync_at": state.get("last_sync_at"),
+        "last_full_sync_at": state.get("last_full_sync_at"),
+        "counts": {key: len(resources.get(key, {})) for key in sorted(resources)},
+        "completed_items": len(state.get("completed_items", {})),
+        "deleted_items": len(state.get("deleted_items", {})),
+        "change_log_entries": len(state.get("change_log", [])),
+    }
+
+
+def store_from_args(args: argparse.Namespace) -> SyncStore:
+    return SyncStore(Path(args.state_dir).expanduser() if getattr(args, "state_dir", None) else None)
+
+
+def flatten_completed_pages(value: Any) -> list[dict[str, Any]]:
+    return [item for item in flatten_paginated(value) if isinstance(item, dict)]
+
+
+def backfill_window(now_iso: str | None, window_days: int) -> tuple[date, date]:
+    now = datetime.fromisoformat(now_iso.replace("Z", "+00:00")) if now_iso else datetime.now()
+    until = now.date()
+    since = until - timedelta(days=window_days)
+    return since, until
+
+
 def invoke(client: Any, method: str, positional: list[Any], kwargs: dict[str, Any], max_pages: int | None) -> Any:
     fn = getattr(client, method)
     result = fn(*positional, **kwargs)
@@ -154,13 +263,84 @@ def invoke(client: Any, method: str, positional: list[Any], kwargs: dict[str, An
     return result
 
 
-def main(argv: list[str] | None = None, client_factory: Callable[[], Any] | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    client_factory: Callable[[], Any] | None = None,
+    sync_fetcher: Callable[..., dict[str, Any]] | None = None,
+) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     fmt = getattr(args, "format", "json")
     try:
+        if getattr(args, "sync_status", False):
+            print_result(sync_status_payload(store_from_args(args)), fmt)
+            return 0
+        if getattr(args, "sync_reset", False):
+            store = store_from_args(args)
+            store.reset()
+            print_result({"status": "reset", "state_file": str(store.state_file)}, fmt)
+            return 0
+        if getattr(args, "sync_pull", False):
+            store = store_from_args(args)
+            state = store.load_state()
+            resources = [part.strip() for part in args.resources.split(",") if part.strip()]
+            sync_token = "*" if args.full or not state.get("sync_token") else state["sync_token"]
+            fetcher = sync_fetcher or fetch_sync_payload
+            payload = fetcher(sync_token=sync_token, resource_types=resources)
+            apply_sync_payload(store, payload)
+            print_result(sync_status_payload(store), fmt)
+            return 0
+        if getattr(args, "sync_backfill_completed", False):
+            store = store_from_args(args)
+            since, until = backfill_window(args.now, args.window_days)
+            client = (client_factory or default_client_factory)()
+            result = client.get_completed_tasks_by_completion_date(since=since, until=until, limit=args.limit)
+            state = apply_completed_backfill(store, flatten_completed_pages(result), args.window_days)
+            payload = sync_status_payload(store)
+            payload["completed_backfill"] = {
+                "window_days": state["completed_backfill"].get("window_days"),
+                "last_run_at": state["completed_backfill"].get("last_run_at"),
+            }
+            print_result(payload, fmt)
+            return 0
         if getattr(args, "heartbeat_context", False):
-            print_result(build_heartbeat_context(fetch_sync_payload()), fmt)
+            store = store_from_args(args)
+            state = store.load_state()
+            if not args.no_sync:
+                resources = [part.strip() for part in args.resources.split(",") if part.strip()]
+                sync_token = "*" if not state.get("sync_token") else state["sync_token"]
+                fetcher = sync_fetcher or fetch_sync_payload
+                state = apply_sync_payload(store, fetcher(sync_token=sync_token, resource_types=resources))
+            payload = sync_state_to_payload(state)
+            context = build_heartbeat_context(payload, now_iso=args.now)
+            context["source"] = "todoist_sync_store"
+            context["counts"]["completed"] = len(state.get("completed_items", {}))
+            context["counts"]["deleted_unknown"] = len(state.get("deleted_items", {}))
+            print_result(context, fmt)
+            return 0
+        if getattr(args, "webhook_receive", False):
+            store = store_from_args(args)
+            body = Path(args.body_file).read_bytes()
+            if not verify_todoist_signature(body, args.signature, args.secret):
+                raise PermissionError("Invalid Todoist webhook signature")
+            payload = json.loads(body.decode("utf-8"))
+            receipt = TodoistWebhookStore(store.state_dir).record_receipt(payload)
+            state = store.load_state()
+            sync_token = "*" if not state.get("sync_token") else state["sync_token"]
+            fetcher = sync_fetcher or fetch_sync_payload
+            apply_sync_payload(store, fetcher(sync_token=sync_token, resource_types=RESOURCE_TYPES))
+            print_result({"status": "accepted", "receipt": receipt, "sync": sync_status_payload(store)}, fmt)
+            return 0
+        if getattr(args, "oauth_authorize_url", False):
+            print_result(
+                {
+                    "authorize_url": build_authorization_url(args.client_id, args.redirect_uri, args.scope, args.state),
+                    "client_id": redact_secret(args.client_id),
+                    "redirect_uri": args.redirect_uri,
+                    "scope": args.scope,
+                },
+                fmt,
+            )
             return 0
         if getattr(args, "raw_call", False):
             method = args.method
@@ -175,7 +355,7 @@ def main(argv: list[str] | None = None, client_factory: Callable[[], Any] | None
         print_result(invoke(client, method, positional, kwargs, args.max_pages), fmt)
         return 0
     except Exception as exc:
-        print(str(exc), file=sys.stderr)
+        print_error(exc, fmt)
         return 1
 
 

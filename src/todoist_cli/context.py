@@ -17,13 +17,17 @@ API_URL = "https://api.todoist.com/api/v1/sync"
 RESOURCE_TYPES = ["items", "projects", "sections", "labels"]
 
 
-def fetch_sync_payload(token: str | None = None) -> dict[str, Any]:
+def fetch_sync_payload(
+    token: str | None = None,
+    sync_token: str = "*",
+    resource_types: list[str] | None = None,
+) -> dict[str, Any]:
     token = token or load_token()
     if not token:
         raise RuntimeError(missing_token_message())
 
     body = urllib.parse.urlencode(
-        {"sync_token": "*", "resource_types": json.dumps(RESOURCE_TYPES)}
+        {"sync_token": sync_token, "resource_types": json.dumps(resource_types or RESOURCE_TYPES)}
     ).encode("utf-8")
     req = urllib.request.Request(
         API_URL,
