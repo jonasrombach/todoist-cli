@@ -56,3 +56,27 @@ def test_location_reminder_update_requires_complete_location_fields(capsys):
     out = json.loads(capsys.readouterr().out)
     assert out["error_type"] == "ValueError"
     assert "loc_lat, loc_long, and loc_trigger" in out["message"]
+
+
+def test_ui_priority_names_map_to_todoist_api_values(capsys):
+    class FakeClient:
+        def add_task(self, content, **kwargs):
+            return {"content": content, **kwargs}
+
+    exit_code = main(["tasks", "add", "Priority test", "--priority", "P2"], client_factory=lambda: FakeClient())
+
+    assert exit_code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["priority"] == 3
+
+
+def test_invalid_priority_is_rejected_before_sdk_call(capsys):
+    exit_code = main(
+        ["tasks", "add", "Priority test", "--priority", "P0"],
+        client_factory=lambda: ShouldNotBeCalledClient(),
+    )
+
+    assert exit_code == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["error_type"] == "ValueError"
+    assert "Invalid value for priority" in out["message"]

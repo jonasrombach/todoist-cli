@@ -29,6 +29,7 @@ FLOAT_OPTIONS = {"loc_lat", "loc_long"}
 DATE_OPTIONS = {"due_date", "deadline_date", "since", "until"}
 DATETIME_OPTIONS = {"due_datetime"}
 JSON_OPTIONS = {"labels", "ids", "attachment", "uids_to_notify"}
+TODOIST_UI_PRIORITY_TO_API = {"p1": 4, "p2": 3, "p3": 2, "p4": 1, "normal": 1, "none": 1}
 
 
 def default_client_factory() -> Any:
@@ -81,6 +82,10 @@ def coerce_option(name: str, value: str | None) -> Any:
         if name in BOOL_OPTIONS:
             return str(value).lower() in {"1", "true", "yes", "y", "on"}
         if name in INT_OPTIONS:
+            if name == "priority":
+                normalized = str(value).strip().lower()
+                if normalized in TODOIST_UI_PRIORITY_TO_API:
+                    return TODOIST_UI_PRIORITY_TO_API[normalized]
             return int(value)
         if name in FLOAT_OPTIONS:
             return float(value)
@@ -106,6 +111,8 @@ def add_option(parser: argparse.ArgumentParser, name: str) -> None:
     flag = "--" + name.replace("_", "-")
     if name in BOOL_OPTIONS:
         parser.add_argument(flag, dest=name, nargs="?", const="true")
+    elif name == "priority":
+        parser.add_argument(flag, dest=name, help="Todoist API priority 1-4, or UI priority P1/P2/P3/P4 (P1 maps to API 4).")
     else:
         parser.add_argument(flag, dest=name)
 
@@ -245,6 +252,8 @@ def namespace_to_kwargs(args: argparse.Namespace, spec: MethodSpec) -> tuple[lis
 
 
 def validate_friendly_args(spec: MethodSpec, kwargs: dict[str, Any]) -> None:
+    if "priority" in kwargs and kwargs["priority"] not in {1, 2, 3, 4}:
+        raise ValueError("priority must be 1-4 or one of P1/P2/P3/P4")
     if spec.name in {"add_task", "update_task", "add_reminder", "update_reminder"}:
         supplied_due = [name for name in ("due_string", "due_date", "due_datetime") if kwargs.get(name) is not None]
         if len(supplied_due) > 1:

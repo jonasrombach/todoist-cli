@@ -72,7 +72,7 @@ Never commit real tokens or local dotenv files.
 ```bash
 todoist-cli projects list
 todoist-cli tasks list --limit 20
-todoist-cli tasks add "Buy milk" --due-string tomorrow
+todoist-cli tasks add "Buy milk" --due-string tomorrow --priority P2
 todoist-cli tasks get <task_id>
 todoist-cli labels list
 todoist-cli raw get_tasks --limit 5
@@ -85,9 +85,14 @@ By default, output is compact JSON. Use `--format pretty` for indented JSON:
 todoist-cli --format pretty tasks list --limit 5
 ```
 
-Global flags such as `--format` must come before the subcommand.
+The CLI accepts Todoist UI priority names as well as raw API numbers:
 
-The CLI is intentionally implementation-agnostic and does not add agent-specific confirmation gates. Callers and automation agents must apply their own safety policy before invoking mutating commands such as `add`, `update`, `move`, `complete`, `archive`, or `delete`.
+- `--priority P1` maps to API priority `4`.
+- `--priority P2` maps to API priority `3`.
+- `--priority P3` maps to API priority `2`.
+- `--priority P4`, `normal`, or `none` maps to API priority `1`.
+
+Raw numeric `--priority 1..4` is still accepted for SDK/API parity.
 
 ## Agent and automation contract
 
@@ -97,6 +102,8 @@ The CLI is intentionally implementation-agnostic and does not add agent-specific
 - stderr is reserved for human-readable diagnostics and errors.
 - Exit code `0` means success.
 - Non-zero exit means failure.
+- Global flags such as `--format` must come before the subcommand.
+- Mutating commands do not ask for confirmation; callers and agents must apply their own safety policy before invoking actions such as `add`, `update`, `move`, `complete`, `archive`, or `delete`.
 - Error output on stdout is a structured JSON envelope:
 
 ```json
