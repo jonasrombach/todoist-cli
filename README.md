@@ -2,7 +2,7 @@
 
 A command-line wrapper around the official Todoist Python SDK.
 
-Status: initial implementation.
+The CLI exposes the synchronous `TodoistAPI` surface as shell commands with JSON output, plus a compact task-context command for automation agents and personal dashboards.
 
 ## Install
 
@@ -10,17 +10,27 @@ Status: initial implementation.
 pip install -e .
 ```
 
-Set a token:
+## Authentication
+
+Set a Todoist API token in your shell:
 
 ```bash
-export TODOIST_API_TOKEN="..."
+export TODOIST_API_TOKEN="***"
 ```
 
-or put it in `~/.hermes/.env`:
+Or put it in a local dotenv-style file and point the CLI at it:
+
+```bash
+export TODOIST_CLI_ENV_FILE="$HOME/.config/todoist-cli/env"
+```
+
+Example env file:
 
 ```text
-TODOIST_API_TOKEN=...
+TODOIST_API_TOKEN=***
 ```
+
+For backwards compatibility, the CLI also checks `~/.hermes/.env` when `TODOIST_CLI_ENV_FILE` is not set. That fallback is intended for local automation setups; do not commit real dotenv files.
 
 ## Examples
 
@@ -34,7 +44,16 @@ todoist-cli raw get_tasks --limit 5
 todoist-cli heartbeat-context
 ```
 
-By default output is JSON. The CLI is intentionally implementation-agnostic and does not add agent-specific confirmation gates; callers/agents should apply their own safety policy before invoking mutating commands.
+By default output is compact JSON. Use `--format pretty` for indented JSON.
+
+The CLI is intentionally implementation-agnostic and does not add agent-specific confirmation gates. Callers and automation agents must apply their own safety policy before invoking mutating commands such as `add`, `update`, `move`, `complete`, `archive`, or `delete`.
+
+## Security and privacy
+
+- Never commit real Todoist tokens, `.env` files, API responses, task exports, or logs containing personal task contents.
+- Prefer `TODOIST_CLI_ENV_FILE` for local dotenv paths instead of documenting machine-specific paths in shared automation.
+- Treat `heartbeat-context` output as personal data. It can include task titles, due dates, labels, project names, and task URLs.
+- Public repositories should keep examples generic and avoid embedding personal workflows, private project names, addresses, contacts, or task contents.
 
 ## SDK coverage
 
@@ -62,6 +81,6 @@ Implemented for the synchronous `TodoistAPI` client:
 - Active-task endpoints (`get_tasks`, `filter_tasks`) only return active tasks. Once a task is completed in Todoist — especially from the native app — it disappears from the active context.
 - The SDK does include completed-task endpoints: `get_completed_tasks_by_completion_date` and `get_completed_tasks_by_due_date`. These should be used to reconcile recent completions, not active-task queries alone.
 - The current `heartbeat-context` command buckets active tasks only. It does not yet maintain a local sync ledger of “previously seen active task → later completed/missing/deleted”.
-- Missing active tasks are ambiguous without reconciliation: they may be completed, deleted, moved, filtered out, or hidden by API limitations. The EA layer must not treat disappearance as failure or confusion without checking completed-task history.
+- Missing active tasks are ambiguous without reconciliation: they may be completed, deleted, moved, filtered out, or hidden by API limitations. The automation layer must not treat disappearance as failure or confusion without checking completed-task history.
 - This needs a deliberate design before implementation: likely local state with last-seen task IDs, periodic completed-task backfill by completion date, and explicit distinction between completed, deleted/unknown, and still-active.
 - The Todoist Sync API may be a better long-term foundation for robust reconciliation because it is designed for incremental sync, but this needs a focused evaluation against the Python SDK capabilities before building.

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import json
-import os
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any
+
+from .auth import load_token, missing_token_message
 
 try:
     from zoneinfo import ZoneInfo
@@ -17,26 +17,11 @@ API_URL = "https://api.todoist.com/api/v1/sync"
 RESOURCE_TYPES = ["items", "projects", "sections", "labels"]
 
 
-def _load_token() -> str | None:
-    token = os.environ.get("TODOIST_API_TOKEN") or os.environ.get("TODOIST_TOKEN")
-    if token:
-        return token.strip()
-    env_file = Path.home() / ".hermes" / ".env"
-    if env_file.exists():
-        for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            if key.strip() in {"TODOIST_API_TOKEN", "TODOIST_TOKEN"}:
-                return value.strip().strip('"').strip("'") or None
-    return None
-
-
 def fetch_sync_payload(token: str | None = None) -> dict[str, Any]:
-    token = token or _load_token()
+    token = token or load_token()
     if not token:
-        raise RuntimeError("Missing TODOIST_API_TOKEN in environment or ~/.hermes/.env")
+        raise RuntimeError(missing_token_message())
+
     body = urllib.parse.urlencode(
         {"sync_token": "*", "resource_types": json.dumps(RESOURCE_TYPES)}
     ).encode("utf-8")

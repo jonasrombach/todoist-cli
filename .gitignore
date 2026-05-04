@@ -8,4 +8,13 @@ venv/
 dist/
 build/
 *.egg-info/
+
+# Local credentials and exports
 .env
+.env.*
+!.env.example
+*.log
+*.jsonl
+.todoist-cli/
+todoist-export*.json
+todoist-sync*.json

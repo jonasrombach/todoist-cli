@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from collections.abc import Callable, Iterable
-from pathlib import Path
 from typing import Any
 
+from .auth import load_token, missing_token_message
 from .context import build_heartbeat_context, fetch_sync_payload
 from .sdk import METHOD_SPECS, MethodSpec, iter_specs
 
@@ -17,28 +16,12 @@ FLOAT_OPTIONS = {"loc_lat", "loc_long"}
 JSON_OPTIONS = {"labels", "ids", "attachment", "uids_to_notify"}
 
 
-def load_token() -> str | None:
-    token = os.environ.get("TODOIST_API_TOKEN") or os.environ.get("TODOIST_TOKEN")
-    if token:
-        return token.strip()
-    env_file = Path.home() / ".hermes" / ".env"
-    if env_file.exists():
-        for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            if key.strip() in {"TODOIST_API_TOKEN", "TODOIST_TOKEN"}:
-                return value.strip().strip('"').strip("'") or None
-    return None
-
-
 def default_client_factory() -> Any:
     from todoist_api_python.api import TodoistAPI
 
     token = load_token()
     if not token:
-        raise RuntimeError("Missing TODOIST_API_TOKEN in environment or ~/.hermes/.env")
+        raise RuntimeError(missing_token_message())
     return TodoistAPI(token)
 
 
