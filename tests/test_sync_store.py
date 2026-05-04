@@ -32,7 +32,10 @@ def test_sync_store_persists_token_and_applies_full_payload(tmp_path: Path):
     assert state["resources"]["items"]["1"]["content"] == "Active"
     assert "2" not in state["resources"]["items"]
     assert state["completed_items"]["2"]["content"] == "Done"
-    assert state["deleted_items"]["3"]["content"] == "Deleted"
+    assert state["deleted_items"]["3"]["status"] == "deleted"
+    assert state["deleted_items"]["3"]["evidence"] == {"kind": "todoist_deleted_item", "task_id": "3", "is_deleted": True}
+    assert state["deleted_items"]["3"]["deleted_delta"]["content"] == "Deleted"
+    assert "last_known" not in state["deleted_items"]["3"]
     assert state["resources"]["projects"]["p1"]["name"] == "Admin"
     assert len(state["change_log"]) == 4
 
@@ -59,4 +62,6 @@ def test_sync_store_applies_incremental_deletion(tmp_path: Path):
     state = store.load_state()
     assert state["sync_token"] == "token-2"
     assert "1" not in state["resources"]["items"]
-    assert state["deleted_items"]["1"]["content"] == "Active"
+    assert state["deleted_items"]["1"]["status"] == "deleted"
+    assert state["deleted_items"]["1"]["deleted_delta"]["content"] == "Active"
+    assert state["deleted_items"]["1"]["last_known"]["content"] == "Active"

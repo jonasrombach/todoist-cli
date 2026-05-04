@@ -275,6 +275,41 @@ def _completed_item_id(item: dict[str, Any]) -> str | None:
     return None
 
 
+def _last_known_item_snapshot(item: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(item, dict):
+        return None
+    return {
+        "id": item.get("id"),
+        "content": item.get("content"),
+        "project_id": item.get("project_id"),
+        "section_id": item.get("section_id"),
+        "parent_id": item.get("parent_id"),
+        "due": item.get("due"),
+        "deadline": item.get("deadline"),
+        "labels": item.get("labels") or [],
+        "priority": item.get("priority"),
+        "description_present": bool(item.get("description")),
+    }
+
+
+def _deleted_item_tombstone(obj_id: str, delta: dict[str, Any], previous: dict[str, Any] | None, seen_at: str) -> dict[str, Any]:
+    tombstone: dict[str, Any] = {
+        "id": obj_id,
+        "status": "deleted",
+        "deleted_at_seen": seen_at,
+        "evidence": {
+            "kind": "todoist_deleted_item",
+            "task_id": obj_id,
+            "is_deleted": bool(delta.get("is_deleted")),
+        },
+        "deleted_delta": delta,
+    }
+    last_known = _last_known_item_snapshot(previous)
+    if last_known is not None:
+        tombstone["last_known"] = last_known
+    return tombstone
+
+
 def apply_completed_backfill(
     store: SyncStore,
     items: list[dict[str, Any]],
@@ -328,7 +363,7 @@ def apply_sync_payload(store: SyncStore, payload: dict[str, Any]) -> dict[str, A
             elif obj.get("is_deleted"):
                 resources[key].pop(obj_id, None)
                 if key == "items":
-                    state["deleted_items"][obj_id] = obj
+                    state["deleted_items"][obj_id] = _deleted_item_tombstone(obj_id, obj, previous, now)
                 event = "deleted"
             else:
                 resources[key][obj_id] = obj

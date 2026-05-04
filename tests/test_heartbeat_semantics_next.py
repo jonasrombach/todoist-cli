@@ -3,6 +3,8 @@ from todoist_cli.context import build_heartbeat_context
 
 def test_heartbeat_context_exposes_completed_deleted_unknown_and_postponed_buckets():
     payload = {
+        "projects": [{"id": "p1", "name": "Admin"}],
+        "labels": [{"id": "waiting", "name": "waiting"}],
         "items": [
             {"id": "1", "content": "Active", "priority": 1, "due": {"date": "2026-05-04"}},
             {"id": "2", "content": "Later", "priority": 1, "due": {"date": "2026-05-20"}},
@@ -16,7 +18,23 @@ def test_heartbeat_context_exposes_completed_deleted_unknown_and_postponed_bucke
                 "completed_by_uid": "u1",
             }
         },
-        "deleted_items": {"4": {"id": "4", "content": "Deleted", "is_deleted": True}},
+        "deleted_items": {
+            "4": {
+                "id": "4",
+                "status": "deleted",
+                "evidence": {"kind": "todoist_deleted_item", "task_id": "4", "is_deleted": True},
+                "deleted_delta": {"id": "4", "content": "", "is_deleted": True},
+                "last_known": {
+                    "id": "4",
+                    "content": "Deleted",
+                    "project_id": "p1",
+                    "due": {"date": "2026-05-05"},
+                    "labels": ["waiting"],
+                    "priority": 3,
+                    "description_present": True,
+                },
+            }
+        },
     }
 
     ctx = build_heartbeat_context(payload, now_iso="2026-05-04T09:00:00+02:00")
@@ -32,10 +50,16 @@ def test_heartbeat_context_exposes_completed_deleted_unknown_and_postponed_bucke
         "completed_by_uid": "u1",
     }
     assert [t["content"] for t in ctx["tasks"]["deleted_unknown"]] == ["Deleted"]
+    assert ctx["tasks"]["deleted_unknown"][0]["project"] == "Admin"
+    assert ctx["tasks"]["deleted_unknown"][0]["status"] == "deleted"
+    assert ctx["tasks"]["deleted_unknown"][0]["attention_required"] is False
+    assert ctx["tasks"]["deleted_unknown"][0]["description_present"] is True
+    assert ctx["tasks"]["deleted_unknown"][0]["labels"] == ["waiting"]
     assert ctx["tasks"]["deleted_unknown"][0]["evidence"] == {
         "kind": "todoist_deleted_item",
         "task_id": "4",
         "is_deleted": True,
+        "source": "deleted_delta_with_prior_snapshot",
     }
     assert "postponed" in ctx["bucket_order"]
     assert ctx["counts"]["completed"] == 1

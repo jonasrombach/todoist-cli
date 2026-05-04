@@ -137,22 +137,42 @@ def build_heartbeat_context(payload: dict[str, Any], now_iso: str | None = None)
                     "completed_at": item.get("completed_at"),
                     "completed_by_uid": item.get("completed_by_uid"),
                 }
+                buckets[bucket_name].append(
+                    {
+                        "id": task_id,
+                        "content": item.get("content"),
+                        "project": projects.get(str(item.get("project_id")), str(item.get("project_id") or "")),
+                        "completed_at": item.get("completed_at"),
+                        "due": item.get("due"),
+                        "evidence": evidence,
+                    }
+                )
             else:
+                last_known = item.get("last_known") if isinstance(item.get("last_known"), dict) else {}
+                delta = item.get("deleted_delta") if isinstance(item.get("deleted_delta"), dict) else item
+                evidence_payload = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+                source = "deleted_delta_with_prior_snapshot" if last_known else "deleted_delta_only"
                 evidence = {
-                    "kind": "todoist_deleted_item",
+                    "kind": evidence_payload.get("kind") or "todoist_deleted_item",
                     "task_id": task_id,
-                    "is_deleted": bool(item.get("is_deleted")),
+                    "is_deleted": bool(evidence_payload.get("is_deleted", delta.get("is_deleted"))),
+                    "source": source,
                 }
-            buckets[bucket_name].append(
-                {
-                    "id": task_id,
-                    "content": item.get("content"),
-                    "project": projects.get(str(item.get("project_id")), str(item.get("project_id") or "")),
-                    "completed_at": item.get("completed_at"),
-                    "due": item.get("due"),
-                    "evidence": evidence,
-                }
-            )
+                project_id = last_known.get("project_id") or delta.get("project_id")
+                buckets[bucket_name].append(
+                    {
+                        "id": task_id,
+                        "content": last_known.get("content"),
+                        "project": projects.get(str(project_id), str(project_id or "")),
+                        "status": "deleted",
+                        "attention_required": False,
+                        "description_present": bool(last_known.get("description_present")),
+                        "due": last_known.get("due"),
+                        "labels": [labels.get(str(label), str(label)) for label in last_known.get("labels") or []],
+                        "priority": last_known.get("priority"),
+                        "evidence": evidence,
+                    }
+                )
     order = {
         "overdue": 0,
         "today": 1,

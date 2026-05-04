@@ -49,6 +49,53 @@ def test_sqlite_store_recovers_from_corrupt_database(tmp_path: Path):
     assert state["sync_token"] is None
 
 
+def test_sqlite_store_records_deleted_tombstone_with_last_known_snapshot(tmp_path: Path):
+    store = SyncStore(tmp_path, backend="sqlite")
+    apply_sync_payload(
+        store,
+        {
+            "sync_token": "token-1",
+            "full_sync": True,
+            "items": [
+                {
+                    "id": "1",
+                    "content": "Delete me",
+                    "description": "Sensitive long detail should not be duplicated",
+                    "project_id": "p1",
+                    "section_id": "s1",
+                    "parent_id": None,
+                    "due": {"date": "2026-05-05"},
+                    "labels": ["waiting"],
+                    "priority": 3,
+                    "checked": False,
+                    "is_deleted": False,
+                }
+            ],
+        },
+    )
+
+    apply_sync_payload(store, {"sync_token": "token-2", "items": [{"id": "1", "is_deleted": True, "content": ""}]})
+
+    state = SyncStore(tmp_path, backend="sqlite").load_state()
+    assert "1" not in state["resources"]["items"]
+    tombstone = state["deleted_items"]["1"]
+    assert tombstone["status"] == "deleted"
+    assert tombstone["evidence"] == {"kind": "todoist_deleted_item", "task_id": "1", "is_deleted": True}
+    assert tombstone["last_known"] == {
+        "id": "1",
+        "content": "Delete me",
+        "project_id": "p1",
+        "section_id": "s1",
+        "parent_id": None,
+        "due": {"date": "2026-05-05"},
+        "deadline": None,
+        "labels": ["waiting"],
+        "priority": 3,
+        "description_present": True,
+    }
+    assert "Sensitive long detail" not in json.dumps(tombstone)
+
+
 def test_sync_migrate_moves_json_state_to_sqlite(tmp_path: Path, capsys):
     (tmp_path / "sync-state.json").write_text(
         json.dumps(

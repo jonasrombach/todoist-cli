@@ -126,7 +126,7 @@ todoist-cli heartbeat-context --no-sync | jq '.tasks.today'
 
 ## State and privacy
 
-The sync store contains personal Todoist data such as task titles, due dates, project IDs/names, labels, URLs, completed-task evidence, deleted-task evidence, and a compact local change log.
+The sync store contains personal Todoist data such as task titles, due dates, project IDs/names, labels, URLs, completed-task evidence, deleted-task evidence, and a compact local change log. For deleted tasks that were previously known locally, the store keeps a small last-known snapshot for reconciliation (title, project/section IDs, due/deadline, labels, priority, and `description_present`). Full task descriptions are not duplicated into deleted-task tombstones.
 
 Default state location:
 
@@ -207,7 +207,7 @@ Heartbeat buckets include:
 - `postponed`
 - `high_priority_no_near_due`
 - `completed`
-- `deleted_unknown`
+- `deleted_unknown` — non-actionable deletion/reconciliation evidence. Deleted entries have `attention_required: false`; if the task was previously seen locally, the output may include the last-known title/project metadata so agents can suppress stale nudges without treating the deleted task as active work.
 
 ## OAuth and webhooks
 
