@@ -67,61 +67,43 @@ Implemented for the synchronous `TodoistAPI` client:
 
 ## Missing / roadmap
 
-### Review findings
+The synchronous `TodoistAPI` SDK surface is covered, and the first automation-reliability slice is implemented: structured JSON errors, typed option coercion, local sync state, incremental `/sync pull`, `heartbeat-context` on the sync store, completed-task backfill by completion date, webhook HMAC receipt handling, and OAuth authorization URL generation.
 
-- Current SDK coverage is complete for the installed synchronous Python SDK: 51/51 public `TodoistAPI` methods are exposed, and the CLI specs match the current method parameters.
-- `TodoistAPIAsync` is not exposed. Its resource methods match the synchronous client, plus async lifecycle handling (`close`). That is not a functional gap for one-shot CLI commands; it matters only if this repo grows a long-running daemon or webhook receiver.
-- OAuth helper functions from `todoist_api_python.authentication` are not exposed. That is acceptable for personal-token local use, but webhook support needs OAuth because Todoist activates webhooks for a user only after that user completes the app's OAuth flow.
-- Todoist API v1 has broader surfaces than the Python SDK wrapper: `/sync`, webhooks, dynamic client registration, OAuth metadata clients/PKCE, uploads/templates/activity/backups/email/workspace features, and the official Todoist MCP server. This CLI should not try to mirror every v1 endpoint immediately; for Hermes, the high-value gap is reliable local state and change notification.
-- The current `heartbeat-context` already uses `/sync` for a full read of selected resources (`items`, `projects`, `sections`, `labels`), but it does not persist `sync_token`, maintain a reusable cache, record deletions/completions over time, or expose a general sync command.
-- Webhooks reduce latency and unnecessary polling, but Todoist explicitly says webhook delivery can be delayed, out of order, or fail; webhooks must be treated as wake-up signals that trigger sync, not as the primary data source.
+Remaining work:
 
-### Concrete implementation plan
+1. **Harden structured errors.**
+   - Add optional `request_id`, `status_code`, and `retryable` fields for Todoist SDK/API failures where available.
+   - Preserve the current compact JSON contract for automation callers.
 
-1. **Stabilize automation-facing output.**
-   - Add `--format json` error objects for failures: `{status:"error", error_type, message, request_id?, status_code?, retryable?}`.
-   - Keep human-readable stderr for direct CLI use.
-   - Add tests for SDK/httpx failures and malformed input.
+2. **Finish friendly-command validation.**
+   - Validate mutually exclusive or dependent fields before SDK calls, especially due/deadline/reminder/location options.
+   - Keep `raw` permissive, but make human-friendly aliases fail early with clear errors.
 
-2. **Tighten argument parsing and validation.**
-   - Parse `date`, `datetime`, integer, boolean, list, and object options deliberately before calling the SDK.
-   - Validate mutually exclusive or dependent fields where the SDK/API expects them, especially due/deadline/reminder/location options.
-   - Keep `raw` permissive, but make friendly command aliases safer.
+3. **Make sync recovery robust.**
+   - Fall back to a full sync when Todoist rejects a stored `sync_token`, the token is missing, or local state is corrupt.
+   - Add explicit corruption detection/recovery tests.
+   - Decide whether the current JSON state file is enough or whether SQLite is worth it once the ledger grows.
 
-3. **Create a local sync store.**
-   - Add a small SQLite DB or state directory under `${XDG_STATE_HOME:-~/.local/state}/todoist-cli/`.
-   - Store: latest `sync_token`, full-sync timestamp, active tasks/items, projects, sections, labels, reminders, last-seen IDs, completed/deleted evidence, and a compact change log.
-   - Redact or avoid unnecessary personal fields in logs; task titles are personal data.
+4. **Improve `heartbeat-context` semantics.**
+   - Distinguish active, completed, deleted/unknown, postponed, overdue, today, next 7 days, and high-priority/no-near-due buckets as first-class output, not just counts for completed/deleted evidence.
+   - Avoid treating disappeared active tasks as open unless completion/deletion evidence supports it.
+   - Optionally run completed-task backfill before heartbeat generation after downtime or first setup.
 
-4. **Implement a reusable incremental `/sync` client.**
-   - Add `todoist-cli sync pull --resources items,projects,sections,labels,reminders`.
-   - First run uses `sync_token='*'`; later runs use the persisted token.
-   - Apply returned deltas to the local sync store and persist the new token atomically.
-   - Fall back to a full sync if the token is rejected, missing, or the local store is corrupt.
-   - Expose `sync status` and `sync reset` for inspection and recovery.
+5. **Complete completed-task backfill.**
+   - Add backfill by due date via `get_completed_tasks_by_due_date` where useful.
+   - Store and expose backfill windows per strategy without duplicating tasks.
 
-5. **Rebuild `heartbeat-context` on the sync store.**
-   - Make `heartbeat-context` call incremental sync first, then build context from the local store.
-   - Distinguish active, completed, deleted/unknown, postponed, overdue, today, next 7 days, and high-priority/no-near-due buckets.
-   - Never infer that a disappeared active task is still open; reconcile against completed-task evidence and sync deletion markers.
-
-6. **Add completed-task backfill.**
-   - Use `get_completed_tasks_by_completion_date` and/or `get_completed_tasks_by_due_date` to backfill recent completions, especially before the first local ledger exists or after downtime.
-   - Store the backfill window and make it configurable, e.g. 7–30 days.
-   - Merge backfill evidence into the sync store without duplicating tasks.
-
-7. **Add webhook ingestion as a wake-up layer.**
-   - Add a minimal receiver or integration endpoint that verifies `X-Todoist-Hmac-SHA256`, accepts configured events, writes an append-only event receipt, responds `200` quickly, and debounces bursts.
-   - On event receipt, trigger `sync pull`; do not trust the webhook payload alone as canonical state.
+6. **Turn webhook handling into an operational endpoint.**
+   - The current CLI can verify a Todoist HMAC payload, write a redacted receipt, and trigger sync. Still needed: an actual receiver/integration endpoint that responds `200` quickly.
+   - Add event filtering and debouncing for bursts.
    - Subscribe at least to task events (`item:added`, `item:updated`, `item:deleted`, `item:completed`, `item:uncompleted`) plus project/section/label/reminder/comment events if those affect context.
-   - Account for Todoist constraints: callback URL must be HTTPS with no explicit port; local-only/Tailscale URLs need a relay/tunnel/public webhook route.
+   - Account for Todoist constraints: callback URL must be HTTPS with no explicit port; local-only/Tailscale URLs need a relay, tunnel, or public webhook route.
 
-8. **Implement OAuth/app setup for webhooks.**
-   - Document or add commands for authorization URL generation, token exchange, refresh-token rotation, revocation, and secure storage.
-   - Include personal-use activation: the app creator still needs to complete the OAuth flow for their own account before webhooks fire.
+7. **Complete OAuth/app setup for webhooks.**
+   - The CLI can generate an authorization URL. Still needed: token exchange, refresh-token rotation, revocation, secure token storage, and clear personal-use activation docs.
    - Store webhook secrets and OAuth refresh tokens outside the repo; never print token values.
 
-9. **Optionally add `/sync` batch writes.**
+8. **Optionally add `/sync` batch writes.**
    - Support command batching where it provides real value: dependent writes, fewer requests, or atomic-ish multi-step changes.
    - Handle `uuid`, `temp_id`, `temp_id_mapping`, partial command failures, and idempotent retry behavior.
    - Keep ordinary SDK commands as the default until batch-write semantics are well tested.
