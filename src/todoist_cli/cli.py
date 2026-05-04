@@ -97,6 +97,11 @@ def coerce_option(name: str, value: str | None) -> Any:
     return value
 
 
+def add_state_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--state-dir")
+    parser.add_argument("--state-backend", choices=["json", "sqlite"], default=None)
+
+
 def add_option(parser: argparse.ArgumentParser, name: str) -> None:
     flag = "--" + name.replace("_", "-")
     if name in BOOL_OPTIONS:
@@ -149,7 +154,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--max-pages", type=int)
 
     ctx = sub.add_parser("heartbeat-context", help="Read Todoist and emit compact heartbeat task context.")
-    ctx.add_argument("--state-dir")
+    add_state_options(ctx)
     ctx.add_argument("--resources", default=",".join(RESOURCE_TYPES))
     ctx.add_argument("--now")
     ctx.add_argument("--no-sync", action="store_true", help="Build from existing local store without pulling first.")
@@ -158,18 +163,22 @@ def build_parser() -> argparse.ArgumentParser:
     sync = sub.add_parser("sync", help="Maintain local Todoist sync state.")
     sync_sub = sync.add_subparsers(dest="sync_action", required=True)
     sync_pull = sync_sub.add_parser("pull", help="Pull Todoist /sync changes into the local store.")
-    sync_pull.add_argument("--state-dir")
+    add_state_options(sync_pull)
     sync_pull.add_argument("--resources", default=",".join(RESOURCE_TYPES))
     sync_pull.add_argument("--full", action="store_true", help="Force a full sync with sync_token='*'.")
     sync_pull.set_defaults(sync_pull=True)
     sync_status = sync_sub.add_parser("status", help="Inspect local sync store status.")
-    sync_status.add_argument("--state-dir")
+    add_state_options(sync_status)
     sync_status.set_defaults(sync_status=True)
     sync_reset = sync_sub.add_parser("reset", help="Remove local sync state.")
-    sync_reset.add_argument("--state-dir")
+    add_state_options(sync_reset)
     sync_reset.set_defaults(sync_reset=True)
+    sync_migrate = sync_sub.add_parser("migrate", help="Migrate JSON sync state into SQLite.")
+    add_state_options(sync_migrate)
+    sync_migrate.add_argument("--remove-json", action="store_true")
+    sync_migrate.set_defaults(sync_migrate=True)
     sync_backfill = sync_sub.add_parser("backfill-completed", help="Backfill recent completed tasks into the sync store.")
-    sync_backfill.add_argument("--state-dir")
+    add_state_options(sync_backfill)
     sync_backfill.add_argument("--window-days", type=int, default=14)
     sync_backfill.add_argument("--strategy", choices=["completion-date", "due-date"], default="completion-date")
     sync_backfill.add_argument("--now")
@@ -179,13 +188,13 @@ def build_parser() -> argparse.ArgumentParser:
     webhook = sub.add_parser("webhook", help="Handle Todoist webhook wake-up events.")
     webhook_sub = webhook.add_subparsers(dest="webhook_action", required=True)
     webhook_receive = webhook_sub.add_parser("receive", help="Verify and record one Todoist webhook payload, then pull sync.")
-    webhook_receive.add_argument("--state-dir")
+    add_state_options(webhook_receive)
     webhook_receive.add_argument("--secret", required=True)
     webhook_receive.add_argument("--signature", required=True)
     webhook_receive.add_argument("--body-file", required=True)
     webhook_receive.set_defaults(webhook_receive=True)
     webhook_serve = webhook_sub.add_parser("serve", help="Run a minimal Todoist webhook HTTP receiver.")
-    webhook_serve.add_argument("--state-dir")
+    add_state_options(webhook_serve)
     webhook_serve.add_argument("--secret", required=True)
     webhook_serve.add_argument("--host", default="127.0.0.1")
     webhook_serve.add_argument("--port", type=int, default=8080)
@@ -204,14 +213,14 @@ def build_parser() -> argparse.ArgumentParser:
     oauth_url.add_argument("--state", required=True)
     oauth_url.set_defaults(oauth_authorize_url=True)
     oauth_exchange = oauth_sub.add_parser("exchange-token", help="Exchange an OAuth code and store returned tokens.")
-    oauth_exchange.add_argument("--state-dir")
+    add_state_options(oauth_exchange)
     oauth_exchange.add_argument("--client-id", required=True)
     oauth_exchange.add_argument("--client-secret", required=True)
     oauth_exchange.add_argument("--code", required=True)
     oauth_exchange.add_argument("--redirect-uri", required=True)
     oauth_exchange.set_defaults(oauth_exchange_token=True)
     oauth_refresh = oauth_sub.add_parser("refresh-token", help="Refresh and store OAuth tokens.")
-    oauth_refresh.add_argument("--state-dir")
+    add_state_options(oauth_refresh)
     oauth_refresh.add_argument("--client-id", required=True)
     oauth_refresh.add_argument("--client-secret", required=True)
     oauth_refresh.add_argument("--refresh-token")
@@ -292,7 +301,9 @@ def sync_status_payload(store: SyncStore) -> dict[str, Any]:
     resources = state.get("resources", {})
     return {
         "configured": True,
-        "state_file": str(store.state_file),
+        "state_backend": store.backend,
+        "state_file": str(store.db_file if store.backend == "sqlite" else store.state_file),
+        "legacy_json_state_file": str(store.state_file),
         "corrupt_state_recovered": store.corrupt_state_recovered,
         "sync_token_present": bool(state.get("sync_token")),
         "last_sync_at": state.get("last_sync_at"),
@@ -305,7 +316,18 @@ def sync_status_payload(store: SyncStore) -> dict[str, Any]:
 
 
 def store_from_args(args: argparse.Namespace) -> SyncStore:
-    return SyncStore(Path(args.state_dir).expanduser() if getattr(args, "state_dir", None) else None)
+    backend = getattr(args, "state_backend", None)
+    return SyncStore(
+        Path(args.state_dir).expanduser() if getattr(args, "state_dir", None) else None,
+        backend=backend if backend else None,
+    )
+
+
+def sqlite_store_for_migration(args: argparse.Namespace) -> SyncStore:
+    return SyncStore(
+        Path(args.state_dir).expanduser() if getattr(args, "state_dir", None) else None,
+        backend="sqlite",
+    )
 
 
 def flatten_completed_pages(value: Any) -> list[dict[str, Any]]:
@@ -392,7 +414,15 @@ def main(
         if getattr(args, "sync_reset", False):
             store = store_from_args(args)
             store.reset()
-            print_result({"status": "reset", "state_file": str(store.state_file)}, fmt)
+            print_result({"status": "reset", "state_backend": store.backend, "state_file": str(store.db_file if store.backend == "sqlite" else store.state_file)}, fmt)
+            return 0
+        if getattr(args, "sync_migrate", False):
+            store = sqlite_store_for_migration(args)
+            state = store.migrate_json_to_sqlite(remove_json=args.remove_json)
+            payload = sync_status_payload(store)
+            payload["status"] = "migrated"
+            payload["migrated_counts"] = {key: len(state.get("resources", {}).get(key, {})) for key in sorted(state.get("resources", {}))}
+            print_result(payload, fmt)
             return 0
         if getattr(args, "sync_pull", False):
             store = store_from_args(args)

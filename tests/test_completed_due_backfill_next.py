@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from todoist_cli.cli import main
+from todoist_cli.sync_store import SyncStore
 
 
 class FakeClient:
@@ -30,5 +31,5 @@ def test_sync_backfill_completed_can_use_due_date_strategy(tmp_path: Path, capsy
     assert exit_code == 0
     out = json.loads(capsys.readouterr().out)
     assert out["completed_items"] == 1
-    state = json.loads((tmp_path / "sync-state.json").read_text(encoding="utf-8"))
+    state = SyncStore(tmp_path).load_state()
     assert state["completed_backfill"]["strategies"]["due-date"]["items"]["2"]["content"] == "Done by due"
