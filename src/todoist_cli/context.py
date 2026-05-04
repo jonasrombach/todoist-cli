@@ -84,7 +84,10 @@ def build_heartbeat_context(payload: dict[str, Any], now_iso: str | None = None)
         "overdue": [],
         "today": [],
         "next_7_days": [],
+        "postponed": [],
         "high_priority_no_near_due": [],
+        "completed": [],
+        "deleted_unknown": [],
     }
     for item in payload.get("items", []):
         if not isinstance(item, dict) or item.get("checked") or item.get("is_deleted"):
@@ -99,6 +102,8 @@ def build_heartbeat_context(payload: dict[str, Any], now_iso: str | None = None)
             bucket = "today"
         elif due_date and today < due_date <= horizon:
             bucket = "next_7_days"
+        elif due_date and due_date > horizon:
+            bucket = "postponed"
         elif priority >= 3:
             bucket = "high_priority_no_near_due"
         if not bucket:
@@ -117,7 +122,30 @@ def build_heartbeat_context(payload: dict[str, Any], now_iso: str | None = None)
             "url": item.get("url"),
         }
         buckets[bucket].append(task)
-    order = {"overdue": 0, "today": 1, "next_7_days": 2, "high_priority_no_near_due": 3}
+    for bucket_name, source_key in (("completed", "completed_items"), ("deleted_unknown", "deleted_items")):
+        raw_items = payload.get(source_key, {})
+        values = raw_items.values() if isinstance(raw_items, dict) else raw_items
+        for item in values or []:
+            if not isinstance(item, dict):
+                continue
+            buckets[bucket_name].append(
+                {
+                    "id": str(item.get("task_id") or item.get("id")),
+                    "content": item.get("content"),
+                    "project": projects.get(str(item.get("project_id")), str(item.get("project_id") or "")),
+                    "completed_at": item.get("completed_at"),
+                    "due": item.get("due"),
+                }
+            )
+    order = {
+        "overdue": 0,
+        "today": 1,
+        "next_7_days": 2,
+        "postponed": 3,
+        "high_priority_no_near_due": 4,
+        "completed": 5,
+        "deleted_unknown": 6,
+    }
     for _key, tasks in buckets.items():
         tasks.sort(key=lambda t: (t.get("due_at") or "9999", -int(t.get("priority") or 1), str(t.get("content") or "")))
     return {

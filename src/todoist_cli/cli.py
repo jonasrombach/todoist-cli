@@ -163,6 +163,7 @@ def build_parser() -> argparse.ArgumentParser:
     sync_backfill = sync_sub.add_parser("backfill-completed", help="Backfill recent completed tasks into the sync store.")
     sync_backfill.add_argument("--state-dir")
     sync_backfill.add_argument("--window-days", type=int, default=14)
+    sync_backfill.add_argument("--strategy", choices=["completion-date", "due-date"], default="completion-date")
     sync_backfill.add_argument("--now")
     sync_backfill.add_argument("--limit", type=int, default=200)
     sync_backfill.set_defaults(sync_backfill_completed=True)
@@ -184,6 +185,11 @@ def build_parser() -> argparse.ArgumentParser:
     oauth_url.add_argument("--scope", required=True)
     oauth_url.add_argument("--state", required=True)
     oauth_url.set_defaults(oauth_authorize_url=True)
+
+    models = sub.add_parser("models", help="Inspect known CLI method specs.")
+    models_sub = models.add_subparsers(dest="models_action", required=True)
+    models_list = models_sub.add_parser("list")
+    models_list.set_defaults(models_list=True)
     return parser
 
 
@@ -194,7 +200,20 @@ def namespace_to_kwargs(args: argparse.Namespace, spec: MethodSpec) -> tuple[lis
         raw = getattr(args, name, None)
         if raw is not None:
             kwargs[name] = coerce_option(name, raw)
+    validate_friendly_args(spec, kwargs)
     return positional, kwargs
+
+
+def validate_friendly_args(spec: MethodSpec, kwargs: dict[str, Any]) -> None:
+    if spec.name in {"add_task", "update_task", "add_reminder", "update_reminder"}:
+        supplied_due = [name for name in ("due_string", "due_date", "due_datetime") if kwargs.get(name) is not None]
+        if len(supplied_due) > 1:
+            raise ValueError(f"due options are mutually exclusive: {', '.join(supplied_due)}")
+    if spec.name in {"add_location_reminder", "update_location_reminder"}:
+        location_fields = {"loc_lat", "loc_long", "loc_trigger"}
+        supplied = {name for name in location_fields if kwargs.get(name) is not None}
+        if supplied and supplied != location_fields:
+            raise ValueError("location reminders require loc_lat, loc_long, and loc_trigger together")
 
 
 def print_result(value: Any, fmt: str) -> None:
@@ -211,6 +230,17 @@ def print_error(exc: Exception, fmt: str) -> None:
         "error_type": type(exc).__name__,
         "message": str(exc),
     }
+    status_code = getattr(exc, "status_code", None)
+    if status_code is None and getattr(exc, "response", None) is not None:
+        status_code = getattr(exc.response, "status_code", None)
+    request_id = getattr(exc, "request_id", None)
+    if request_id is None and getattr(exc, "response", None) is not None:
+        request_id = getattr(exc.response, "headers", {}).get("x-request-id")
+    if request_id:
+        error["request_id"] = request_id
+    if status_code is not None:
+        error["status_code"] = status_code
+        error["retryable"] = int(status_code) in {408, 409, 425, 429, 500, 502, 503, 504}
     print(str(exc), file=sys.stderr)
     if fmt == "pretty":
         print(json.dumps(error, ensure_ascii=False, indent=2, sort_keys=True))
@@ -220,7 +250,10 @@ def print_error(exc: Exception, fmt: str) -> None:
 
 def sync_state_to_payload(state: dict[str, Any]) -> dict[str, Any]:
     resources = state.get("resources", {})
-    return {key: list(resources.get(key, {}).values()) for key in RESOURCE_TYPES}
+    payload = {key: list(resources.get(key, {}).values()) for key in RESOURCE_TYPES}
+    payload["completed_items"] = state.get("completed_items", {})
+    payload["deleted_items"] = state.get("deleted_items", {})
+    return payload
 
 
 def sync_status_payload(store: SyncStore) -> dict[str, Any]:
@@ -229,6 +262,7 @@ def sync_status_payload(store: SyncStore) -> dict[str, Any]:
     return {
         "configured": True,
         "state_file": str(store.state_file),
+        "corrupt_state_recovered": store.corrupt_state_recovered,
         "sync_token_present": bool(state.get("sync_token")),
         "last_sync_at": state.get("last_sync_at"),
         "last_full_sync_at": state.get("last_full_sync_at"),
@@ -252,6 +286,48 @@ def backfill_window(now_iso: str | None, window_days: int) -> tuple[date, date]:
     until = now.date()
     since = until - timedelta(days=window_days)
     return since, until
+
+
+def is_invalid_sync_token_error(exc: Exception) -> bool:
+    status_code = getattr(exc, "status_code", None)
+    if status_code is None and getattr(exc, "response", None) is not None:
+        status_code = getattr(exc.response, "status_code", None)
+    text = str(exc).lower()
+    return status_code in {400, 401} and "sync" in text and "token" in text
+
+
+def pull_sync_into_store(
+    store: SyncStore,
+    resources: list[str],
+    full: bool,
+    fetcher: Callable[..., dict[str, Any]],
+) -> dict[str, Any]:
+    state = store.load_state()
+    sync_token = "*" if full or store.corrupt_state_recovered or not state.get("sync_token") else state["sync_token"]
+    try:
+        payload = fetcher(sync_token=sync_token, resource_types=resources)
+    except Exception as exc:
+        if sync_token != "*" and is_invalid_sync_token_error(exc):
+            payload = fetcher(sync_token="*", resource_types=resources)
+        else:
+            raise
+    return apply_sync_payload(store, payload)
+
+
+def models_payload() -> dict[str, Any]:
+    return {
+        "methods": {
+            name: {
+                "group": spec.group,
+                "action": spec.action,
+                "positional": list(spec.positional),
+                "options": list(spec.options),
+                "mutating": spec.mutating,
+                "paginated": spec.paginated,
+            }
+            for name, spec in sorted(METHOD_SPECS.items())
+        }
+    }
 
 
 def invoke(client: Any, method: str, positional: list[Any], kwargs: dict[str, Any], max_pages: int | None) -> Any:
@@ -282,20 +358,20 @@ def main(
             return 0
         if getattr(args, "sync_pull", False):
             store = store_from_args(args)
-            state = store.load_state()
             resources = [part.strip() for part in args.resources.split(",") if part.strip()]
-            sync_token = "*" if args.full or not state.get("sync_token") else state["sync_token"]
             fetcher = sync_fetcher or fetch_sync_payload
-            payload = fetcher(sync_token=sync_token, resource_types=resources)
-            apply_sync_payload(store, payload)
+            pull_sync_into_store(store, resources, args.full, fetcher)
             print_result(sync_status_payload(store), fmt)
             return 0
         if getattr(args, "sync_backfill_completed", False):
             store = store_from_args(args)
             since, until = backfill_window(args.now, args.window_days)
             client = (client_factory or default_client_factory)()
-            result = client.get_completed_tasks_by_completion_date(since=since, until=until, limit=args.limit)
-            state = apply_completed_backfill(store, flatten_completed_pages(result), args.window_days)
+            if args.strategy == "due-date":
+                result = client.get_completed_tasks_by_due_date(since=since, until=until, limit=args.limit)
+            else:
+                result = client.get_completed_tasks_by_completion_date(since=since, until=until, limit=args.limit)
+            state = apply_completed_backfill(store, flatten_completed_pages(result), args.window_days, args.strategy)
             payload = sync_status_payload(store)
             payload["completed_backfill"] = {
                 "window_days": state["completed_backfill"].get("window_days"),
@@ -308,9 +384,8 @@ def main(
             state = store.load_state()
             if not args.no_sync:
                 resources = [part.strip() for part in args.resources.split(",") if part.strip()]
-                sync_token = "*" if not state.get("sync_token") else state["sync_token"]
                 fetcher = sync_fetcher or fetch_sync_payload
-                state = apply_sync_payload(store, fetcher(sync_token=sync_token, resource_types=resources))
+                state = pull_sync_into_store(store, resources, False, fetcher)
             payload = sync_state_to_payload(state)
             context = build_heartbeat_context(payload, now_iso=args.now)
             context["source"] = "todoist_sync_store"
@@ -341,6 +416,9 @@ def main(
                 },
                 fmt,
             )
+            return 0
+        if getattr(args, "models_list", False):
+            print_result(models_payload(), fmt)
             return 0
         if getattr(args, "raw_call", False):
             method = args.method

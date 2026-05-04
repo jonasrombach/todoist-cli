@@ -26,7 +26,7 @@ def empty_state() -> dict[str, Any]:
         "resources": {key: {} for key in RESOURCE_KEYS},
         "completed_items": {},
         "deleted_items": {},
-        "completed_backfill": {"window_days": None, "last_run_at": None, "items": {}},
+        "completed_backfill": {"window_days": None, "last_run_at": None, "items": {}, "strategies": {}},
         "change_log": [],
     }
 
@@ -35,11 +35,16 @@ class SyncStore:
     def __init__(self, state_dir: Path | None = None) -> None:
         self.state_dir = state_dir or default_state_dir()
         self.state_file = self.state_dir / "sync-state.json"
+        self.corrupt_state_recovered = False
 
     def load_state(self) -> dict[str, Any]:
         if not self.state_file.exists():
             return empty_state()
-        data = json.loads(self.state_file.read_text(encoding="utf-8"))
+        try:
+            data = json.loads(self.state_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            self.corrupt_state_recovered = True
+            return empty_state()
         state = empty_state()
         state.update(data)
         resources = state.setdefault("resources", {})
@@ -47,8 +52,9 @@ class SyncStore:
             resources.setdefault(key, {})
         state.setdefault("completed_items", {})
         state.setdefault("deleted_items", {})
-        state.setdefault("completed_backfill", {"window_days": None, "last_run_at": None, "items": {}})
+        state.setdefault("completed_backfill", {"window_days": None, "last_run_at": None, "items": {}, "strategies": {}})
         state["completed_backfill"].setdefault("items", {})
+        state["completed_backfill"].setdefault("strategies", {})
         state.setdefault("change_log", [])
         return state
 
@@ -82,13 +88,22 @@ def _completed_item_id(item: dict[str, Any]) -> str | None:
     return None
 
 
-def apply_completed_backfill(store: SyncStore, items: list[dict[str, Any]], window_days: int) -> dict[str, Any]:
+def apply_completed_backfill(
+    store: SyncStore,
+    items: list[dict[str, Any]],
+    window_days: int,
+    strategy: str = "completion-date",
+) -> dict[str, Any]:
     state = store.load_state()
     now = _now_iso()
-    backfill = state.setdefault("completed_backfill", {"window_days": None, "last_run_at": None, "items": {}})
+    backfill = state.setdefault("completed_backfill", {"window_days": None, "last_run_at": None, "items": {}, "strategies": {}})
     backfill["window_days"] = window_days
     backfill["last_run_at"] = now
     backfill_items = backfill.setdefault("items", {})
+    strategy_state = backfill.setdefault("strategies", {}).setdefault(strategy, {"window_days": None, "last_run_at": None, "items": {}})
+    strategy_state["window_days"] = window_days
+    strategy_state["last_run_at"] = now
+    strategy_items = strategy_state.setdefault("items", {})
     for item in items:
         if not isinstance(item, dict):
             continue
@@ -96,6 +111,7 @@ def apply_completed_backfill(store: SyncStore, items: list[dict[str, Any]], wind
         if item_id is None:
             continue
         backfill_items[item_id] = item
+        strategy_items[item_id] = item
         state["completed_items"].setdefault(item_id, item)
     store.save_state(state)
     return state
