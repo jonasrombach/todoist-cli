@@ -65,16 +65,27 @@ Implemented for the synchronous `TodoistAPI` client:
 - Paginated SDK iterators are flattened to JSON arrays by default.
 - `raw` exposes exact SDK method names for less common operations.
 
-## Missing / roadmap
+## Automation features
 
-The synchronous `TodoistAPI` SDK surface is covered. Automation reliability work is implemented: structured JSON errors with retry metadata where available, typed option coercion, friendly-command validation, local sync state with incremental `/sync pull` and full-sync recovery, `heartbeat-context` on the sync store, completed-task backfill by completion date and due date, webhook HMAC receipt handling plus a minimal operational receiver, OAuth helper/storage primitives, model/spec discovery, and `/sync` batch payload helpers.
+Beyond the SDK wrapper, the repo now includes the local automation layer Hermes needs:
+
+- Structured JSON errors, including `status_code`, `request_id`, and `retryable` where the SDK/API exposes them.
+- Typed option coercion for dates, datetimes, numbers, booleans, and JSON options, plus validation for common dangerous/friendly-command combinations.
+- Incremental `/sync` state under `${XDG_STATE_HOME:-~/.local/state}/todoist-cli/sync-state.json`, with full-sync recovery for rejected tokens and corrupt local state.
+- `heartbeat-context` built from the local sync store with semantic buckets for overdue, today, next-7-days, postponed, high-priority unscheduled, completed, and deleted evidence.
+- Completed-task backfill by completion date and due date.
+- Todoist webhook HMAC verification, privacy-preserving receipt logging, and a minimal HTTP receiver via `todoist-cli webhook serve`.
+- OAuth helper flow: authorization URL, token exchange, token refresh, secure local token storage with `0600`, and redacted output.
+- `todoist-cli models list` for method/spec discovery.
+- `/sync` batch payload helper primitives in the Python package for dependent writes.
+
+## Operational notes
 
 No high-priority functional roadmap items remain for the current Hermes/Todoist workflow.
 
-### Deferred / optional gaps
+Things intentionally not built until there is a concrete need:
 
-- **Production webhook deployment.** The repo now has the receiver primitive, filtering, debouncing, and sync trigger hook. Actual deployment still depends on infrastructure choice: public HTTPS callback with no explicit port, relay, tunnel, or Hermes webhook gateway route.
-- **OAuth live exchange wiring.** The repo has request builders and secure token storage primitives. A real app still needs client credentials, callback hosting, and account activation through Todoist's OAuth flow before webhooks fire.
-- **SQLite migration.** Current JSON state is adequate for the small local ledger. Revisit SQLite only if state grows enough to need querying, locking, or multi-process writes.
-- **Broad Todoist API v1 expansion.** Uploads, templates, activity, backups, email helpers, workspace/admin operations, and MCP integration remain intentionally out of scope unless a concrete workflow needs them.
-- **Async CLI mode and custom SDK client injection.** Keep deferred unless this repo grows a long-running daemon or needs advanced timeout/proxy/tracing behavior.
+- Production webhook hosting/relay choice. Todoist requires a public HTTPS callback without an explicit port; this depends on deployment infrastructure, not the CLI package itself.
+- SQLite state storage. JSON is adequate for the current small local ledger.
+- Broad non-SDK Todoist API v1 expansion such as uploads, templates, activity, backups, email helpers, workspace/admin operations, or MCP integration.
+- Async CLI mode and custom SDK client injection, unless this grows into a long-running daemon or needs advanced timeout/proxy/tracing behavior.

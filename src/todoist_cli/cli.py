@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import threading
 from collections.abc import Callable, Iterable
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -10,10 +11,17 @@ from typing import Any
 
 from .auth import load_token, missing_token_message
 from .context import RESOURCE_TYPES, build_heartbeat_context, fetch_sync_payload
-from .oauth import build_authorization_url, redact_secret
+from .oauth import (
+    OAuthTokenStore,
+    build_authorization_url,
+    build_token_exchange_request,
+    build_token_refresh_request,
+    post_token_request,
+    redact_secret,
+)
 from .sdk import METHOD_SPECS, MethodSpec, iter_specs
 from .sync_store import SyncStore, apply_completed_backfill, apply_sync_payload
-from .webhooks import TodoistWebhookStore, verify_todoist_signature
+from .webhooks import TodoistWebhookStore, run_webhook_server, verify_todoist_signature
 
 BOOL_OPTIONS = {"is_favorite", "auto_reminder", "auto_parse_labels", "omit_personal", "collapsed"}
 INT_OPTIONS = {"item_order", "priority", "duration", "minute_offset", "order", "day_order", "radius", "limit"}
@@ -176,6 +184,16 @@ def build_parser() -> argparse.ArgumentParser:
     webhook_receive.add_argument("--signature", required=True)
     webhook_receive.add_argument("--body-file", required=True)
     webhook_receive.set_defaults(webhook_receive=True)
+    webhook_serve = webhook_sub.add_parser("serve", help="Run a minimal Todoist webhook HTTP receiver.")
+    webhook_serve.add_argument("--state-dir")
+    webhook_serve.add_argument("--secret", required=True)
+    webhook_serve.add_argument("--host", default="127.0.0.1")
+    webhook_serve.add_argument("--port", type=int, default=8080)
+    webhook_serve.add_argument("--allow-event", action="append", default=[])
+    webhook_serve.add_argument("--debounce-seconds", type=int, default=5)
+    webhook_serve.add_argument("--once", action="store_true", help="Exit after accepting one non-debounced event.")
+    webhook_serve.add_argument("--timeout", type=float, default=None, help="Seconds to wait in --once mode.")
+    webhook_serve.set_defaults(webhook_serve=True)
 
     oauth = sub.add_parser("oauth", help="Todoist OAuth helper commands.")
     oauth_sub = oauth.add_subparsers(dest="oauth_action", required=True)
@@ -185,6 +203,19 @@ def build_parser() -> argparse.ArgumentParser:
     oauth_url.add_argument("--scope", required=True)
     oauth_url.add_argument("--state", required=True)
     oauth_url.set_defaults(oauth_authorize_url=True)
+    oauth_exchange = oauth_sub.add_parser("exchange-token", help="Exchange an OAuth code and store returned tokens.")
+    oauth_exchange.add_argument("--state-dir")
+    oauth_exchange.add_argument("--client-id", required=True)
+    oauth_exchange.add_argument("--client-secret", required=True)
+    oauth_exchange.add_argument("--code", required=True)
+    oauth_exchange.add_argument("--redirect-uri", required=True)
+    oauth_exchange.set_defaults(oauth_exchange_token=True)
+    oauth_refresh = oauth_sub.add_parser("refresh-token", help="Refresh and store OAuth tokens.")
+    oauth_refresh.add_argument("--state-dir")
+    oauth_refresh.add_argument("--client-id", required=True)
+    oauth_refresh.add_argument("--client-secret", required=True)
+    oauth_refresh.add_argument("--refresh-token")
+    oauth_refresh.set_defaults(oauth_refresh_token=True)
 
     models = sub.add_parser("models", help="Inspect known CLI method specs.")
     models_sub = models.add_subparsers(dest="models_action", required=True)
@@ -314,6 +345,12 @@ def pull_sync_into_store(
     return apply_sync_payload(store, payload)
 
 
+def sync_once(store: SyncStore, fetcher: Callable[..., dict[str, Any]]) -> dict[str, Any]:
+    state = store.load_state()
+    sync_token = "*" if store.corrupt_state_recovered or not state.get("sync_token") else state["sync_token"]
+    return apply_sync_payload(store, fetcher(sync_token=sync_token, resource_types=RESOURCE_TYPES))
+
+
 def models_payload() -> dict[str, Any]:
     return {
         "methods": {
@@ -343,6 +380,7 @@ def main(
     argv: list[str] | None = None,
     client_factory: Callable[[], Any] | None = None,
     sync_fetcher: Callable[..., dict[str, Any]] | None = None,
+    oauth_post: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
 ) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -400,11 +438,38 @@ def main(
                 raise PermissionError("Invalid Todoist webhook signature")
             payload = json.loads(body.decode("utf-8"))
             receipt = TodoistWebhookStore(store.state_dir).record_receipt(payload)
-            state = store.load_state()
-            sync_token = "*" if not state.get("sync_token") else state["sync_token"]
-            fetcher = sync_fetcher or fetch_sync_payload
-            apply_sync_payload(store, fetcher(sync_token=sync_token, resource_types=RESOURCE_TYPES))
+            sync_once(store, sync_fetcher or fetch_sync_payload)
             print_result({"status": "accepted", "receipt": receipt, "sync": sync_status_payload(store)}, fmt)
+            return 0
+        if getattr(args, "webhook_serve", False):
+            store = store_from_args(args)
+            served = threading.Event()
+
+            def run_sync() -> None:
+                sync_once(store, sync_fetcher or fetch_sync_payload)
+                served.set()
+
+            server = run_webhook_server(
+                host=args.host,
+                port=args.port,
+                state_dir=store.state_dir,
+                secret=args.secret,
+                allowed_events=set(args.allow_event or []),
+                debounce_seconds=args.debounce_seconds,
+                sync_callback=run_sync,
+            )
+            if args.once:
+                if not served.wait(args.timeout):
+                    server.shutdown()
+                    raise TimeoutError("No accepted Todoist webhook received before timeout")
+                server.shutdown()
+                print_result({"status": "served_once", "address": f"{args.host}:{args.port}"}, fmt)
+                return 0
+            print_result({"status": "serving", "address": f"{args.host}:{args.port}", "path": "/todoist/webhook"}, fmt)
+            try:
+                threading.Event().wait()
+            except KeyboardInterrupt:
+                server.shutdown()
             return 0
         if getattr(args, "oauth_authorize_url", False):
             print_result(
@@ -416,6 +481,23 @@ def main(
                 },
                 fmt,
             )
+            return 0
+        if getattr(args, "oauth_exchange_token", False):
+            store = OAuthTokenStore(store_from_args(args).state_dir)
+            request_payload = build_token_exchange_request(args.client_id, args.client_secret, args.code, args.redirect_uri)
+            tokens = (oauth_post or post_token_request)(request_payload["url"], request_payload["body"])
+            store.save_tokens(tokens)
+            print_result({"status": "stored", "tokens": store.redacted_summary()}, fmt)
+            return 0
+        if getattr(args, "oauth_refresh_token", False):
+            store = OAuthTokenStore(store_from_args(args).state_dir)
+            refresh_token = args.refresh_token or store.load_tokens().get("refresh_token")
+            if not refresh_token:
+                raise ValueError("Missing refresh token; pass --refresh-token or exchange/store tokens first")
+            request_payload = build_token_refresh_request(args.client_id, args.client_secret, refresh_token)
+            tokens = (oauth_post or post_token_request)(request_payload["url"], request_payload["body"])
+            store.save_tokens(tokens)
+            print_result({"status": "stored", "tokens": store.redacted_summary()}, fmt)
             return 0
         if getattr(args, "models_list", False):
             print_result(models_payload(), fmt)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +47,18 @@ def build_token_refresh_request(client_id: str, client_secret: str, refresh_toke
         "refresh_token": refresh_token,
     }
     return {"url": TOKEN_URL, "body": body, "redacted": _redacted_body(body)}
+
+
+def post_token_request(url: str, body: dict[str, Any]) -> dict[str, Any]:
+    data = urllib.parse.urlencode(body).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "todoist-cli/0.1"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=25) as resp:
+        return json.loads(resp.read().decode("utf-8"))
 
 
 def _redacted_body(body: dict[str, Any]) -> dict[str, Any]:
