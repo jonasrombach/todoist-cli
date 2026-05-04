@@ -21,3 +21,21 @@ def test_heartbeat_context_buckets_tasks():
     assert [t["content"] for t in ctx["tasks"]["today"]] == ["Today"]
     assert [t["content"] for t in ctx["tasks"]["next_7_days"]] == ["Soon"]
     assert [t["content"] for t in ctx["tasks"]["high_priority_no_near_due"]] == ["Important"]
+
+
+def test_heartbeat_context_skips_tasks_in_archived_projects():
+    payload = {
+        "projects": [
+            {"id": "active", "name": "Active"},
+            {"id": "archived", "name": "Archived", "is_archived": True},
+        ],
+        "items": [
+            {"id": "1", "content": "Still relevant", "project_id": "active", "priority": 1, "due": {"date": "2026-05-04"}},
+            {"id": "2", "content": "Archived noise", "project_id": "archived", "priority": 4, "due": {"date": "2026-05-04"}},
+        ],
+    }
+
+    ctx = build_heartbeat_context(payload, now_iso="2026-05-04T09:00:00+02:00")
+
+    assert [t["content"] for t in ctx["tasks"]["today"]] == ["Still relevant"]
+    assert "Archived noise" not in str(ctx)

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "todoist-cli"
-version = "0.1.0"
+version = "0.1.1"
 description = "JSON-first CLI wrapper and local automation layer for Todoist."
 readme = "README.md"
 requires-python = ">=3.10"
