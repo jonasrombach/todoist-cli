@@ -297,11 +297,23 @@ def print_error(exc: Exception, fmt: str) -> None:
         print(json.dumps(error, ensure_ascii=False, separators=(",", ":")))
 
 
-def sync_state_to_payload(state: dict[str, Any]) -> dict[str, Any]:
+def sync_state_to_payload(state: dict[str, Any], include_inactive_projects: bool = False) -> dict[str, Any]:
     resources = state.get("resources", {})
-    payload = {key: list(resources.get(key, {}).values()) for key in RESOURCE_TYPES}
+    projects = resources.get("projects", {}) or {}
+    inactive_project_ids = {
+        str(project_id)
+        for project_id, project in projects.items()
+        if isinstance(project, dict) and (project.get("is_archived") or project.get("is_deleted"))
+    }
+    payload: dict[str, Any] = {}
+    for key in RESOURCE_TYPES:
+        values = list((resources.get(key, {}) or {}).values())
+        if key == "items" and not include_inactive_projects:
+            values = [item for item in values if not (isinstance(item, dict) and str(item.get("project_id")) in inactive_project_ids)]
+        payload[key] = values
     payload["completed_items"] = state.get("completed_items", {})
     payload["deleted_items"] = state.get("deleted_items", {})
+    payload["inactive_project_ids"] = sorted(inactive_project_ids)
     return payload
 
 

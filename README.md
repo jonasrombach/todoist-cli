@@ -209,7 +209,7 @@ Heartbeat buckets include:
 - `completed`
 - `deleted_unknown` — non-actionable deletion/reconciliation evidence. Deleted entries have `attention_required: false`; if the task was previously seen locally, the output may include the last-known title/project metadata so agents can suppress stale nudges without treating the deleted task as active work.
 
-Tasks in archived or deleted projects are suppressed from active heartbeat buckets. Archiving a project is therefore treated as “not nudgeable” even if Todoist still returns the project’s tasks in sync state.
+Tasks in archived or deleted projects are treated as inactive by the sync-store payload layer and are suppressed from active automation contexts. Archiving a project is therefore treated as “not nudgeable” even if Todoist still returns the project’s tasks in raw sync state.
 
 ## OAuth and webhooks
 

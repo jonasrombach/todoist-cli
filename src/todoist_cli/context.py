@@ -78,11 +78,6 @@ def build_heartbeat_context(payload: dict[str, Any], now_iso: str | None = None)
     today = now.date()
     horizon = today + timedelta(days=7)
     projects = {str(p.get("id")): p.get("name") for p in payload.get("projects", []) if isinstance(p, dict)}
-    inactive_project_ids = {
-        str(p.get("id"))
-        for p in payload.get("projects", [])
-        if isinstance(p, dict) and (p.get("is_archived") or p.get("is_deleted")) and p.get("id") is not None
-    }
     sections = {str(s.get("id")): s.get("name") for s in payload.get("sections", []) if isinstance(s, dict)}
     labels = {str(label.get("id")): label.get("name") for label in payload.get("labels", []) if isinstance(label, dict)}
     buckets: dict[str, list[dict[str, Any]]] = {
@@ -96,8 +91,6 @@ def build_heartbeat_context(payload: dict[str, Any], now_iso: str | None = None)
     }
     for item in payload.get("items", []):
         if not isinstance(item, dict) or item.get("checked") or item.get("is_deleted"):
-            continue
-        if str(item.get("project_id")) in inactive_project_ids:
             continue
         due_dt, date_only = _parse_due(item.get("due"))
         due_date = due_dt.date() if due_dt else None
