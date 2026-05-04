@@ -65,22 +65,29 @@ Implemented for the synchronous `TodoistAPI` client:
 - Paginated SDK iterators are flattened to JSON arrays by default.
 - `raw` exposes exact SDK method names for less common operations.
 
-## Missing
+## Missing / roadmap
 
-### SDK/API surface
+### Review findings
 
-- Async client is not exposed: `TodoistAPIAsync` has matching resource methods plus async lifecycle handling, but this CLI currently wraps only sync `TodoistAPI`.
-- OAuth helpers are not exposed: `get_authentication_url`, `get_auth_token`, `revoke_auth_token`, and async variants from `todoist_api_python.authentication` are not implemented as CLI commands.
-- Custom SDK client injection is not exposed: the SDK accepts a custom `httpx.Client` and `request_id_fn`; the CLI only supports the default client/token path.
-- Type-aware argument parsing is shallow: dates/datetimes are passed as strings unless the SDK accepts/normalizes them; JSON options exist for list/object parameters, but richer validation/help is still thin.
-- Model-level docs are not surfaced: the SDK's model objects and constraints are serialized after the fact, but the CLI does not yet provide model schemas or enum/value discovery commands.
-- Error output is minimal: SDK/httpx errors are printed as text; no structured error JSON mode yet.
+- Current SDK coverage is complete for the installed synchronous Python SDK: 51/51 public `TodoistAPI` methods are exposed, and the CLI specs match the current method parameters.
+- `TodoistAPIAsync` is not exposed. Its resource methods match the synchronous client, plus async lifecycle handling (`close`). That is not a functional gap for a CLI unless a long-running daemon is added.
+- The Todoist API v1 `/sync` endpoint is already used by `heartbeat-context` for a full read of selected resources, but there is no reusable sync client, persisted `sync_token`, incremental cache, or command-batch writer yet.
+- Webhooks are separate from `/sync`: they can wake automation in near-real time, but they should trigger an incremental sync rather than replace local state reconciliation.
 
-### Completed-task tracking / external app changes
+### Recommended implementation order
 
-- Active-task endpoints (`get_tasks`, `filter_tasks`) only return active tasks. Once a task is completed in Todoist — especially from the native app — it disappears from the active context.
-- The SDK does include completed-task endpoints: `get_completed_tasks_by_completion_date` and `get_completed_tasks_by_due_date`. These should be used to reconcile recent completions, not active-task queries alone.
-- The current `heartbeat-context` command buckets active tasks only. It does not yet maintain a local sync ledger of “previously seen active task → later completed/missing/deleted”.
-- Missing active tasks are ambiguous without reconciliation: they may be completed, deleted, moved, filtered out, or hidden by API limitations. The automation layer must not treat disappearance as failure or confusion without checking completed-task history.
-- This needs a deliberate design before implementation: likely local state with last-seen task IDs, periodic completed-task backfill by completion date, and explicit distinction between completed, deleted/unknown, and still-active.
-- The Todoist Sync API may be a better long-term foundation for robust reconciliation because it is designed for incremental sync, but this needs a focused evaluation against the Python SDK capabilities before building.
+1. **Structured errors and safer output contracts.** Return machine-readable error JSON for SDK/httpx failures while keeping stderr human-readable. This makes automation less brittle and is low-risk.
+2. **Type-aware argument parsing and validation.** Parse `date`/`datetime`/list/object parameters intentionally, expose useful validation errors, and keep JSON options predictable. This improves every mutating command before adding more automation.
+3. **Local sync ledger for task reconciliation.** Store a compact local state file or SQLite DB with last-seen task IDs, project/section/label names, completion/deletion evidence, and a timestamped change log. This prevents automation from treating disappeared active tasks as mysterious or still-open.
+4. **Incremental `/sync` client.** Replace repeated full reads with `sync_token`-based incremental sync against `https://api.todoist.com/api/v1/sync`, with configurable `resource_types` and fallback to `sync_token='*'` when local state is missing or invalid.
+5. **Completed-task backfill.** Use `get_completed_tasks_by_completion_date` / `get_completed_tasks_by_due_date` to reconcile recent completions, especially for tasks completed in Todoist native apps before the local ledger saw the change.
+6. **Webhook-triggered refresh.** Add a small webhook receiver that verifies `X-Todoist-Hmac-SHA256`, accepts subscribed events (`item:added`, `item:updated`, `item:deleted`, `item:completed`, `item:uncompleted`, and related project/section/label events), debounces bursts, then runs incremental sync. Webhooks reduce polling latency and request volume, but they need a public HTTPS callback with no explicit port; local-only/Tailscale URLs are not enough without a relay/tunnel.
+7. **OAuth/app setup for webhooks.** Personal API tokens are enough for local CLI reads/writes, but webhooks are configured through a Todoist app/integration. Supporting them cleanly means documenting or implementing app registration/OAuth, callback URL setup, subscribed events, webhook secret storage, and token refresh/revocation handling.
+8. **Batch writes via `/sync` commands.** Add optional command batching for operations that benefit from atomic/dependent writes and `temp_id` mapping. Keep ordinary SDK commands as the default until batch semantics are tested.
+
+### Lower-priority gaps
+
+- OAuth helper commands are not exposed: `get_authentication_url`, `get_auth_token`, `revoke_auth_token`, and async variants from `todoist_api_python.authentication` are not implemented as CLI commands. Add these only when supporting multi-user auth or webhooks; personal-token local use does not need them.
+- Custom SDK client injection is not exposed: the SDK accepts a custom `httpx.Client` and `request_id_fn`; the CLI only supports the default client/token path. This matters mainly for advanced timeout, retry, proxy, or observability needs.
+- Model-level docs are not surfaced: SDK model objects and constraints are serialized after the fact, but the CLI does not yet provide model schemas or enum/value discovery commands.
+- Async CLI mode is not exposed. Keep this deferred unless the repo grows a daemon/watch process where async HTTP lifecycle management would matter.
